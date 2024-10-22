@@ -18,12 +18,17 @@ type MysqlDumper struct {
 	GzipWriter *gzip.Writer
 }
 
+const (
+	varchar = "varchar"
+)
+
 func (m *MysqlDumper) dump() (err error) {
 	//连接数据库
 	var tableStructure string
 	var primaryKey string
 	var minPrimaryKey int
 	var maxPrimaryKey int
+	var dataType string
 	var tables []string
 
 	if err = m.connectDB(); err != nil {
@@ -39,13 +44,13 @@ func (m *MysqlDumper) dump() (err error) {
 		if tableStructure, err = m.getTableStructure(table); err != nil {
 			return
 		}
-		if primaryKey, minPrimaryKey, maxPrimaryKey, err = m.getPrimaryKey(table); err != nil {
+		if primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err = m.getPrimaryKey(table); err != nil {
 			return err
 		}
 		//写入表结构
 		m.GzipWriter.Write([]byte(fmt.Sprintf("-- Table structure for `%s`\n%s;\n\n", table, tableStructure)))
 		if primaryKey != "" {
-			m.getDataByPrimaryKey(table, primaryKey, minPrimaryKey, maxPrimaryKey)
+			m.getDataByPrimaryKey(table, primaryKey, dataType, minPrimaryKey, maxPrimaryKey)
 		} else {
 			m.getDataByLimit(table)
 
@@ -90,34 +95,47 @@ func (m *MysqlDumper) getTableStructure(tableName string) (createTableStmt strin
 	return createTableStmt, nil
 }
 
-func (m *MysqlDumper) getPrimaryKey(tableName string) (primaryKey string, minPrimaryKey, maxPrimaryKey int, err error) {
+func (m *MysqlDumper) getPrimaryKey(tableName string) (primaryKey, dataType string, minPrimaryKey, maxPrimaryKey int, err error) {
 	//获取主键
 	if err = m.db.QueryRow(fmt.Sprintf(`
 			SELECT GROUP_CONCAT(COLUMN_NAME)
 			FROM information_schema.KEY_COLUMN_USAGE
 			WHERE TABLE_NAME = '%s' AND TABLE_SCHEMA = '%s' AND CONSTRAINT_NAME = 'PRIMARY'`, tableName, m.DataBase)).Scan(&primaryKey); err != nil {
-		return primaryKey, minPrimaryKey, maxPrimaryKey, err
+		return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
 	}
 	if err = m.db.QueryRow(fmt.Sprintf("SELECT min(%s) from %s", primaryKey, tableName)).Scan(&minPrimaryKey); err != nil {
-		return primaryKey, minPrimaryKey, maxPrimaryKey, err
+		return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
 	}
 	if err = m.db.QueryRow(fmt.Sprintf("SELECT max(%s) from %s", primaryKey, tableName)).Scan(&maxPrimaryKey); err != nil {
-		return primaryKey, minPrimaryKey, maxPrimaryKey, err
+		return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
+	}
+	if err = m.db.QueryRow(fmt.Sprintf("SELECT max(%s) from %s", primaryKey, tableName)).Scan(&maxPrimaryKey); err != nil {
+		return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
+	}
+	if err = m.db.QueryRow(fmt.Sprintf("SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_NAME = '%s' AND TABLE_SCHEMA = '%s' AND COLUMN_KEY = 'PRIMARY'", tableName, m.DataBase)).Scan(&dataType); err != nil {
+		return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
 	}
 	primaryKey = strings.Split(primaryKey, ",")[0]
-	return primaryKey, minPrimaryKey, maxPrimaryKey, nil
+	return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
 
 }
 
-func (m *MysqlDumper) getDataByPrimaryKey(table, primaryKey string, minPrimaryKey, maxPrimaryKey int) {
+func (m *MysqlDumper) getDataByPrimaryKey(table, primaryKey, dataType string, minPrimaryKey, maxPrimaryKey int) {
 	var err error
 	total := maxPrimaryKey - minPrimaryKey + 1/1000 + 1
 	startPrimaryKey := minPrimaryKey / 1000
 	for i := 0; i < total; i++ {
 		var rows *sql.Rows
+		var querySql string
 		start := (startPrimaryKey + i) * 1000
 		end := (startPrimaryKey + i + 1) * 1000
-		querySql := fmt.Sprintf("SELECT * FROM %s WHERE %s > %d and %s < %d", table, primaryKey, start, primaryKey, end)
+
+		switch dataType {
+		case varchar:
+			querySql = fmt.Sprintf("SELECT * FROM %s WHERE '%s' > %d and '%s' < %d", table, primaryKey, start, primaryKey, end)
+		default:
+			querySql = fmt.Sprintf("SELECT * FROM %s WHERE %s > %d and %s < %d", table, primaryKey, start, primaryKey, end)
+		}
 		if rows, err = m.db.Query(querySql); err != nil {
 			fmt.Println("查询失败:", err.Error(), "查询语句:", querySql)
 			return
