@@ -32,7 +32,8 @@ func (d *Dumper) Dump() (err error) {
 		return err
 	}
 	d.gzipWriter = gzip.NewWriter(sqlFile)
-
+	defer sqlFile.Close()
+	defer d.gzipWriter.Close()
 	switch d.Driver {
 	case mysql:
 		mysqlDumper := MysqlDumper{

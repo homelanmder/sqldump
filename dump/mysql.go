@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"database/sql"
 	"fmt"
+	_ "github.com/go-sql-driver/mysql"
 	"io"
 	"strings"
 )
@@ -42,19 +43,17 @@ func (m *MysqlDumper) dump() (err error) {
 
 	for _, table := range tables {
 		if tableStructure, err = m.getTableStructure(table); err != nil {
+
 			return
-		}
-		if primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err = m.getPrimaryKey(table); err != nil {
-			return err
 		}
 		//写入表结构
 		m.GzipWriter.Write([]byte(fmt.Sprintf("-- Table structure for `%s`\n%s;\n\n", table, tableStructure)))
-		if primaryKey != "" {
-			m.getDataByPrimaryKey(table, primaryKey, dataType, minPrimaryKey, maxPrimaryKey)
-		} else {
+		if primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err = m.getPrimaryKey(table); err != nil {
 			m.getDataByLimit(table)
-
+		} else {
+			m.getDataByPrimaryKey(table, primaryKey, dataType, minPrimaryKey, maxPrimaryKey)
 		}
+
 	}
 
 	return nil
@@ -89,7 +88,6 @@ func (m *MysqlDumper) getTables() (tables []string, err error) {
 func (m *MysqlDumper) getTableStructure(tableName string) (createTableStmt string, err error) {
 	err = m.db.QueryRow(fmt.Sprintf("SHOW CREATE TABLE %s", tableName)).Scan(&tableName, &createTableStmt)
 	if err != nil {
-		fmt.Println("获取表结构失败:", err)
 		return "", err
 	}
 	return createTableStmt, nil
@@ -103,16 +101,21 @@ func (m *MysqlDumper) getPrimaryKey(tableName string) (primaryKey, dataType stri
 			WHERE TABLE_NAME = '%s' AND TABLE_SCHEMA = '%s' AND CONSTRAINT_NAME = 'PRIMARY'`, tableName, m.DataBase)).Scan(&primaryKey); err != nil {
 		return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
 	}
+
 	if err = m.db.QueryRow(fmt.Sprintf("SELECT min(%s) from %s", primaryKey, tableName)).Scan(&minPrimaryKey); err != nil {
+
 		return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
 	}
 	if err = m.db.QueryRow(fmt.Sprintf("SELECT max(%s) from %s", primaryKey, tableName)).Scan(&maxPrimaryKey); err != nil {
 		return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
 	}
+
 	if err = m.db.QueryRow(fmt.Sprintf("SELECT max(%s) from %s", primaryKey, tableName)).Scan(&maxPrimaryKey); err != nil {
 		return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
 	}
-	if err = m.db.QueryRow(fmt.Sprintf("SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_NAME = '%s' AND TABLE_SCHEMA = '%s' AND COLUMN_KEY = 'PRIMARY'", tableName, m.DataBase)).Scan(&dataType); err != nil {
+
+	if err = m.db.QueryRow(fmt.Sprintf("SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_NAME = '%s' AND TABLE_SCHEMA = '%s' AND COLUMN_KEY = 'PRI'", tableName, m.DataBase)).Scan(&dataType); err != nil {
+
 		return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
 	}
 	primaryKey = strings.Split(primaryKey, ",")[0]

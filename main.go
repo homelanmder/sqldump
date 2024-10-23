@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"sqldump/dump"
 )
 
@@ -32,6 +33,9 @@ func main() {
 		Driver:   driver,
 		DataBase: database,
 	}
-	dumper.Dump()
+	if err := dumper.Dump(); err != nil {
+		fmt.Println(err.Error())
+		return
+	}
 
 }
