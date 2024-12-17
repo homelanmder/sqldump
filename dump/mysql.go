@@ -55,7 +55,8 @@ func (m *MysqlDumper) dump() (err error) {
 			fmt.Printf("正在导出%s,使用select *导出\n", table)
 			m.getDataByLimit(table)
 		} else {
-			if primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err = m.getPrimaryKey(table); err != nil || primaryKey == "" {
+
+			if primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err = m.getPrimaryKey(table); err != nil || primaryKey == "" || (maxPrimaryKey-minPrimaryKey)/1000 > count*100 {
 				fmt.Printf("正在导出%s,使用select *导出\n", table)
 				m.getDataByLimit(table)
 			} else {
