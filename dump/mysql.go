@@ -43,37 +43,51 @@ func (m *MysqlDumper) dump() (err error) {
 	//获取创建表的sql语句
 
 	for _, table := range tables {
-
-		if !m.CheckIsNull(table) {
-			continue
-		}
 		if tableStructure, err = m.getTableStructure(table); err != nil {
 			return
 		}
 		//写入表结构
 		m.GzipWriter.Write([]byte(fmt.Sprintf("-- Table structure for `%s`\n%s;\n\n", table, tableStructure)))
-		if primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err = m.getPrimaryKey(table); err != nil || primaryKey == "" {
+		count := m.RowCount(table)
+		if count == 0 {
+			continue
+		} else if count <= 15000 {
 			fmt.Printf("正在导出%s,使用select *导出\n", table)
 			m.getDataByLimit(table)
 		} else {
-			//fmt.Println(primaryKey, dataType, minPrimaryKey, maxPrimaryKey, table)
-			fmt.Printf("正在导出%s,采用主键模式,键值为%s,%s,%d,%d\n", table, primaryKey, dataType, minPrimaryKey, maxPrimaryKey)
-
-			m.getDataByPrimaryKey(table, primaryKey, dataType, minPrimaryKey, maxPrimaryKey)
+			if primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err = m.getPrimaryKey(table); err != nil || primaryKey == "" {
+				fmt.Printf("正在导出%s,使用select *导出\n", table)
+				m.getDataByLimit(table)
+			} else {
+				//fmt.Println(primaryKey, dataType, minPrimaryKey, maxPrimaryKey, table)
+				fmt.Printf("正在导出%s,采用主键模式,键值为%s,%s,%d,%d\n", table, primaryKey, dataType, minPrimaryKey, maxPrimaryKey)
+				m.getDataByPrimaryKey(table, primaryKey, dataType, minPrimaryKey, maxPrimaryKey)
+			}
 		}
+		//if tableStructure, err = m.getTableStructure(table); err != nil {
+		//	return
+		//}
+		////写入表结构
+		//m.GzipWriter.Write([]byte(fmt.Sprintf("-- Table structure for `%s`\n%s;\n\n", table, tableStructure)))
+		//if primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err = m.getPrimaryKey(table); err != nil || primaryKey == "" {
+		//	fmt.Printf("正在导出%s,使用select *导出\n", table)
+		//	m.getDataByLimit(table)
+		//} else {
+		//	//fmt.Println(primaryKey, dataType, minPrimaryKey, maxPrimaryKey, table)
+		//	fmt.Printf("正在导出%s,采用主键模式,键值为%s,%s,%d,%d\n", table, primaryKey, dataType, minPrimaryKey, maxPrimaryKey)
+		//
+		//	m.getDataByPrimaryKey(table, primaryKey, dataType, minPrimaryKey, maxPrimaryKey)
+		//}
 
 	}
 
 	return nil
 }
-func (m *MysqlDumper) CheckIsNull(table string) (NotNull bool) {
-	var count int
+func (m *MysqlDumper) RowCount(table string) (count int) {
+
 	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", table)
 	m.db.QueryRow(query).Scan(&count)
-	if count != 0 {
-		NotNull = true
-	}
-	return NotNull
+	return count
 }
 
 func (m *MysqlDumper) connectDB() error {
