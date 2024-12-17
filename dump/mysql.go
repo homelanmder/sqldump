@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
-	"io"
+	"strconv"
 	"strings"
 )
 
@@ -37,26 +37,43 @@ func (m *MysqlDumper) dump() (err error) {
 	}
 	//获取所有表名
 	if tables, err = m.getTables(); err != nil {
+		fmt.Println(err.Error())
 		return err
 	}
 	//获取创建表的sql语句
 
 	for _, table := range tables {
-		if tableStructure, err = m.getTableStructure(table); err != nil {
 
+		if !m.CheckIsNull(table) {
+			continue
+		}
+		if tableStructure, err = m.getTableStructure(table); err != nil {
 			return
 		}
 		//写入表结构
 		m.GzipWriter.Write([]byte(fmt.Sprintf("-- Table structure for `%s`\n%s;\n\n", table, tableStructure)))
-		if primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err = m.getPrimaryKey(table); err != nil {
+		if primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err = m.getPrimaryKey(table); err != nil || primaryKey == "" {
+			fmt.Printf("正在导出%s,使用select *导出\n", table)
 			m.getDataByLimit(table)
 		} else {
+			//fmt.Println(primaryKey, dataType, minPrimaryKey, maxPrimaryKey, table)
+			fmt.Printf("正在导出%s,采用主键模式,键值为%s,%s,%d,%d\n", table, primaryKey, dataType, minPrimaryKey, maxPrimaryKey)
+
 			m.getDataByPrimaryKey(table, primaryKey, dataType, minPrimaryKey, maxPrimaryKey)
 		}
 
 	}
 
 	return nil
+}
+func (m *MysqlDumper) CheckIsNull(table string) (NotNull bool) {
+	var count int
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", table)
+	m.db.QueryRow(query).Scan(&count)
+	if count != 0 {
+		NotNull = true
+	}
+	return NotNull
 }
 
 func (m *MysqlDumper) connectDB() error {
@@ -110,9 +127,9 @@ func (m *MysqlDumper) getPrimaryKey(tableName string) (primaryKey, dataType stri
 		return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
 	}
 
-	if err = m.db.QueryRow(fmt.Sprintf("SELECT max(%s) from %s", primaryKey, tableName)).Scan(&maxPrimaryKey); err != nil {
-		return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
-	}
+	//if err = m.db.QueryRow(fmt.Sprintf("SELECT max(%s) from %s", primaryKey, tableName)).Scan(&maxPrimaryKey); err != nil {
+	//	return primaryKey, dataType, minPrimaryKey, maxPrimaryKey, err
+	//}
 
 	if err = m.db.QueryRow(fmt.Sprintf("SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_NAME = '%s' AND TABLE_SCHEMA = '%s' AND COLUMN_KEY = 'PRI'", tableName, m.DataBase)).Scan(&dataType); err != nil {
 
@@ -125,7 +142,7 @@ func (m *MysqlDumper) getPrimaryKey(tableName string) (primaryKey, dataType stri
 
 func (m *MysqlDumper) getDataByPrimaryKey(table, primaryKey, dataType string, minPrimaryKey, maxPrimaryKey int) {
 	var err error
-	total := maxPrimaryKey - minPrimaryKey + 1/1000 + 1
+	total := (maxPrimaryKey-minPrimaryKey+1)/1000 + 1
 	startPrimaryKey := minPrimaryKey / 1000
 	for i := 0; i < total; i++ {
 		var rows *sql.Rows
@@ -143,8 +160,8 @@ func (m *MysqlDumper) getDataByPrimaryKey(table, primaryKey, dataType string, mi
 			fmt.Println("查询失败:", err.Error(), "查询语句:", querySql)
 			return
 		}
-		if err = m.dealRows(rows, table); err != nil {
-			return
+		if _, err = m.dealRows(rows, table); err != nil {
+			continue
 		}
 	}
 }
@@ -156,13 +173,17 @@ func (m *MysqlDumper) getDataByLimit(table string) {
 		// 分页查询数据
 		var rows *sql.Rows
 		var err error
+		var isNull bool
 		querySql := fmt.Sprintf("SELECT * FROM %s LIMIT %d OFFSET %d", table, pageSize, offset)
 		if rows, err = m.db.Query(querySql); err != nil {
 			fmt.Println("查询失败:", err.Error(), "查询语句:", querySql)
 			return
 		}
-		if err = m.dealRows(rows, table); err != nil {
-			return
+		if isNull, err = m.dealRows(rows, table); err != nil {
+			continue
+		}
+		if isNull {
+			break
 		}
 
 		// 处理完一页，增加 offset
@@ -170,12 +191,18 @@ func (m *MysqlDumper) getDataByLimit(table string) {
 	}
 }
 
-func (m *MysqlDumper) dealRows(rows *sql.Rows, table string) error {
+func (m *MysqlDumper) dealRows(rows *sql.Rows, table string) (isNull bool, err error) {
 	var columns []string
-	var err error
+
+	var allData []string
+
 	if columns, err = rows.Columns(); err != nil {
 		fmt.Println("获取列失败:", err)
-		return err
+		return isNull, err
+	}
+
+	for i, col := range columns {
+		columns[i] = fmt.Sprintf("`%s`", col) // 使用反引号
 	}
 
 	// 处理每一行数据
@@ -185,11 +212,11 @@ func (m *MysqlDumper) dealRows(rows *sql.Rows, table string) error {
 	for i := range values {
 		scanArgs[i] = &values[i]
 	}
-	rowCount := 0
+
 	for rows.Next() {
 		if err = rows.Scan(scanArgs...); err != nil {
 			fmt.Println("扫描行数据失败:", err)
-			return err
+			return isNull, err
 		}
 
 		// 将每行数据转成 SQL 插入语句
@@ -198,31 +225,31 @@ func (m *MysqlDumper) dealRows(rows *sql.Rows, table string) error {
 			if val == nil {
 				valueStrings[i] = "NULL"
 			} else {
-				valueStrings[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(string(val), "'", "''"))
+				//处理sql注入导致数据内容有特殊字符
+				content := strconv.Quote(string(val))
+				//fmt.Println(content)
+				//content := strings.ReplaceAll(string(val), `\'`, `'`)
+				//content = strings.ReplaceAll(string(val), `'`, `\'`)
+				valueStrings[i] = fmt.Sprintf("'%s'", content)
 			}
 		}
 
-		// 将列名用反引号括起来
-		quotedColumns := make([]string, len(columns))
-		for i, col := range columns {
-			quotedColumns[i] = fmt.Sprintf("`%s`", col) // 使用反引号
-		}
-
-		insertQuery := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s);\n", table, strings.Join(quotedColumns, ", "), strings.Join(valueStrings, ", "))
+		allData = append(allData, fmt.Sprintf("(%s)", strings.Join(valueStrings, ",")))
+	}
+	rows.Close()
+	if len(allData) != 0 {
+		insertQuery := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s;\n", table, strings.Join(columns, ", "), strings.Join(allData, ", "))
 
 		// 将插入语句写入 gzip 文件
 		_, err = m.GzipWriter.Write([]byte(insertQuery))
 		if err != nil {
 			fmt.Println("写入文件失败:", err)
-			return err
+			return isNull, err
 		}
-
-		rowCount++
+	} else {
+		isNull = true
 	}
-	rows.Close()
 	// 如果当前页查询没有返回任何数据，表示导出结束
-	if rowCount == 0 {
-		return io.EOF
-	}
-	return nil
+
+	return isNull, err
 }
